@@ -1,0 +1,214 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: airflow-llm
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: airflow-llm-config
+  namespace: airflow-llm
+data:
+  AIRFLOW__CORE__EXECUTOR: "KubernetesExecutor"
+  AIRFLOW__KUBERNETES__NAMESPACE: "airflow-llm"
+  AIRFLOW__CORE__PARALLELISM: "32"
+  AIRFLOW_LLM__COST_OPTIMIZATION: "true"
+  AIRFLOW_LLM__SELF_HEALING: "true"
+  AIRFLOW_LLM__MULTI_CLOUD: "true"
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: airflow-llm-secrets
+  namespace: airflow-llm
+type: Opaque
+data:
+  openai-api-key: <base64-encoded-key>
+  anthropic-api-key: <base64-encoded-key>
+  aws-access-key: <base64-encoded-key>
+  aws-secret-key: <base64-encoded-key>
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: airflow-llm-scheduler
+  namespace: airflow-llm
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      component: scheduler
+      app: airflow-llm
+  template:
+    metadata:
+      labels:
+        component: scheduler
+        app: airflow-llm
+    spec:
+      serviceAccountName: airflow-llm
+      containers:
+        - name: scheduler
+          image: ghcr.io/v-code01/airflow-llm:latest
+          imagePullPolicy: Always
+          command: ["airflow", "scheduler"]
+          envFrom:
+            - configMapRef:
+                name: airflow-llm-config
+          env:
+            - name: OPENAI_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: airflow-llm-secrets
+                  key: openai-api-key
+            - name: ANTHROPIC_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: airflow-llm-secrets
+                  key: anthropic-api-key
+          resources:
+            requests:
+              cpu: 2
+              memory: 4Gi
+            limits:
+              cpu: 4
+              memory: 8Gi
+          volumeMounts:
+            - name: dags
+              mountPath: /opt/airflow/dags
+            - name: logs
+              mountPath: /opt/airflow/logs
+      volumes:
+        - name: dags
+          persistentVolumeClaim:
+            claimName: airflow-dags-pvc
+        - name: logs
+          persistentVolumeClaim:
+            claimName: airflow-logs-pvc
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: airflow-llm-webserver
+  namespace: airflow-llm
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      component: webserver
+      app: airflow-llm
+  template:
+    metadata:
+      labels:
+        component: webserver
+        app: airflow-llm
+    spec:
+      serviceAccountName: airflow-llm
+      containers:
+        - name: webserver
+          image: ghcr.io/v-code01/airflow-llm:latest
+          imagePullPolicy: Always
+          command: ["airflow", "webserver"]
+          ports:
+            - containerPort: 8080
+          envFrom:
+            - configMapRef:
+                name: airflow-llm-config
+          env:
+            - name: OPENAI_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: airflow-llm-secrets
+                  key: openai-api-key
+          resources:
+            requests:
+              cpu: 1
+              memory: 2Gi
+            limits:
+              cpu: 2
+              memory: 4Gi
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 30
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 60
+            periodSeconds: 10
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: airflow-llm-webserver
+  namespace: airflow-llm
+spec:
+  type: LoadBalancer
+  selector:
+    component: webserver
+    app: airflow-llm
+  ports:
+    - protocol: TCP
+      port: 80
+      targetPort: 8080
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: airflow-llm-worker-hpa
+  namespace: airflow-llm
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: airflow-llm-worker
+  minReplicas: 2
+  maxReplicas: 100
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70
+    - type: Resource
+      resource:
+        name: memory
+        target:
+          type: Utilization
+          averageUtilization: 80
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: airflow-llm
+  namespace: airflow-llm
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: airflow-llm-role
+  namespace: airflow-llm
+rules:
+  - apiGroups: [""]
+    resources: ["pods", "pods/log"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: [""]
+    resources: ["services", "persistentvolumeclaims"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: airflow-llm-rolebinding
+  namespace: airflow-llm
+subjects:
+  - kind: ServiceAccount
+    name: airflow-llm
+    namespace: airflow-llm
+roleRef:
+  kind: Role
+  name: airflow-llm-role
+  apiGroup: rbac.authorization.k8s.io

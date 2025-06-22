@@ -1,0 +1,29 @@
+[MASTER]
+load-plugins=pylint.extensions.docparams
+
+[MESSAGES CONTROL]
+disable=
+    C0114,  # missing-module-docstring
+    C0115,  # missing-class-docstring
+    C0116,  # missing-function-docstring
+    R0903,  # too-few-public-methods
+    R0913,  # too-many-arguments
+    W0613,  # unused-argument
+    R0901,  # too-many-ancestors
+    R0902,  # too-many-instance-attributes
+
+[FORMAT]
+max-line-length=88
+
+[DESIGN]
+max-complexity=10
+max-attributes=10
+max-locals=15
+max-branches=12
+max-statements=50
+
+[BASIC]
+good-names=i,j,k,ex,Run,_,id,db
+
+[TYPECHECK]
+generated-members=numpy.*,torch.*
