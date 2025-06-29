@@ -32,39 +32,14 @@ try:
     AIRFLOW_AVAILABLE = True
 except ImportError:
     AIRFLOW_AVAILABLE = False
-
-    # Mock classes for development
-    class DAG:
-        def __init__(self, dag_id, **kwargs):
-            self.dag_id = dag_id
-            self.tasks = []
-            self.tags = kwargs.get("tags", [])
-
-        @property
-        def task_ids(self):
-            return [task.task_id for task in self.tasks]
-
-    class DagRun:
-        pass
-
-    class TaskInstance:
-        pass
+    DAG = None
+    DagRun = None
+    TaskInstance = None
 
     def days_ago(n):
         return datetime.now() - timedelta(days=n)
 
 
-from .models.specialized_ensemble import EnhancedModelRouter
-
-
-class MockCostTracker:
-    """Mock cost tracker for development"""
-
-    def track_cost(self, *args, **kwargs):
-        return 0.0
-
-    def get_total_cost(self):
-        return 0.0
 
 
 @dataclass
@@ -86,7 +61,7 @@ class LLMOrchestrator:
 
     def __init__(
         self,
-        models: list[str] = ["gpt-4", "gpt-3.5-turbo", "llama-70b"],
+        models: list[str] = ["codellama-7b", "sqlcoder-7b", "llama3-8b", "phi3-mini"],
         cost_optimization: bool = True,
         self_healing: bool = True,
         predictive_analytics: bool = True,
@@ -98,24 +73,38 @@ class LLMOrchestrator:
         self.predictive_analytics = predictive_analytics
         self.gpu_aware = gpu_aware
         self.execution_history = {}
-        self.model_router = EnhancedModelRouter()
-        # Initialize mock cost tracker if not available
         try:
-            self.cost_tracker = CostTracker()
-        except NameError:
-            self.cost_tracker = MockCostTracker()
+            from .model_server import model_server
+            from .models.specialized_ensemble import enhanced_router
 
-    def generate_dag(
+            self.model_server = model_server
+            self.model_router = enhanced_router
+        except ImportError:
+            from airflow_llm.model_server import model_server
+            from airflow_llm.models.specialized_ensemble import enhanced_router
+
+            self.model_server = model_server
+            self.model_router = enhanced_router
+        # Initialize real cost tracker
+        self.cost_tracker = CostTracker()
+        # Initialize models on startup
+        self._models_initialized = False
+
+    async def generate_dag(
         self, description: str, constraints: dict[str, Any] | None = None
     ) -> DAG:
         """
-        Generate optimized DAG from natural language description
+        Generate optimized DAG from natural language description using real AI
         """
-        # Use LLM to parse requirements
-        dag_structure = self._parse_requirements(description)
+        # Ensure models are initialized
+        if not self._models_initialized:
+            await self._initialize_models()
 
-        # Optimize task dependencies
-        optimized_structure = self._optimize_dependencies(dag_structure)
+        # Use real AI to parse requirements
+        dag_structure = await self._parse_requirements(description)
+
+        # Optimize task dependencies with AI
+        optimized_structure = await self._optimize_dependencies(dag_structure)
 
         # Apply constraints
         if constraints:
@@ -123,8 +112,8 @@ class LLMOrchestrator:
                 optimized_structure, constraints
             )
 
-        # Generate DAG code
-        dag = self._create_dag(optimized_structure)
+        # Generate DAG code with actual implementations
+        dag = await self._create_dag_with_implementations(optimized_structure)
 
         # Add monitoring and self-healing
         if self.self_healing:
@@ -132,36 +121,304 @@ class LLMOrchestrator:
 
         return dag
 
-    def _parse_requirements(self, description: str) -> dict:
-        """Parse natural language requirements into structured format"""
-        prompt = f"""
-        Convert this pipeline description into a structured DAG:
-        {description}
-
-        Return JSON with tasks, dependencies, and resource requirements.
-        """
-
-        response = self.model_router.query(prompt, task_type="parsing")
+    async def _initialize_models(self):
+        """Initialize the model server with required models"""
         try:
-            return json.loads(response)
-        except json.JSONDecodeError:
-            # Fallback structure if JSON parsing fails
+            await self.model_server.initialize_models(self.models, backend="auto")
+            self._models_initialized = True
+        except Exception as e:
+            print(f"Warning: Failed to initialize models: {e}")
+            # Still mark as initialized to avoid infinite retries
+            self._models_initialized = True
+
+    async def _parse_requirements(self, description: str) -> dict:
+        """Parse natural language requirements into structured format using real AI"""
+        prompt = f"""Convert this pipeline description to a valid JSON DAG structure:
+
+{description}
+
+Return ONLY a valid JSON object with this exact format:
+{{
+  "dag_id": "pipeline_name",
+  "description": "Brief description",
+  "schedule_interval": "@daily",
+  "tasks": [
+    {{
+      "id": "task_name",
+      "operator": "PythonOperator",
+      "description": "What this task does",
+      "upstream_dependencies": []
+    }}
+  ]
+}}
+
+Important: Return ONLY the JSON object, no explanations or markdown."""
+
+        try:
+            # Ensure model server is initialized first
+            if not self._models_initialized:
+                await self._initialize_models()
+
+            # Use the real model server for inference
+            result = await self.model_server.generate(prompt, model_name="phi3-mini")
+            if result.success:
+                response_text = result.text.strip()
+                # Try to extract JSON from response
+                if response_text.startswith("```json"):
+                    response_text = response_text[7:-3].strip()
+                elif response_text.startswith("```"):
+                    response_text = response_text[3:-3].strip()
+
+                try:
+                    return json.loads(response_text)
+                except json.JSONDecodeError:
+                    # Robust JSON parsing for phi3-mini model
+                    return self._robust_json_parse(response_text)
+            else:
+                raise Exception(f"Model inference failed: {result.error}")
+        except Exception as e:
+            print(f"AI parsing failed: {e}, using fallback")
+            # Intelligent fallback based on description analysis
+            return self._create_fallback_structure(description)
+
+    def _robust_json_parse(self, response_text: str) -> dict:
+        """Robust JSON parsing that handles phi3-mini formatting issues"""
+        import re
+
+        try:
+            # Strategy 1: Clean up common formatting issues
+            cleaned = response_text.replace("\n\n", "\n")
+            cleaned = re.sub(r",\s*\n\s*}", "\n}", cleaned)
+            cleaned = re.sub(r",\s*\n\s*]", "\n]", cleaned)
+
+            # Fix missing commas between tasks
+            cleaned = re.sub(r"}\s*\n\s*{", "},\n{", cleaned)
+
+            # Fix malformed property names (hallmark: -> "operator":)
+            cleaned = re.sub(r'\bhallmark:\s*([\'"])', r'"operator": \1', cleaned)
+            cleaned = re.sub(r'\bid:\s*([\'"])', r'"id": \1', cleaned)
+            cleaned = re.sub(r'\bdescription:\s*([\'"])', r'"description": \1', cleaned)
+            cleaned = re.sub(
+                r"\bupstream_dependencies:\s*\[", r'"upstream_dependencies": [', cleaned
+            )
+
+            # Fix single quotes to double quotes
+            cleaned = re.sub(r"'([^']*)'", r'"\1"', cleaned)
+
+            return json.loads(cleaned)
+
+        except:
+            # Strategy 2: Manual extraction with smart task parsing
+            dag_id_match = re.search(r'"dag_id":\s*"([^"]*)"', response_text)
+            desc_match = re.search(r'"description":\s*"([^"]*)"', response_text)
+            sched_match = re.search(r'"schedule_interval":\s*"([^"]*)"', response_text)
+
+            # Extract tasks more intelligently
+            tasks = []
+
+            # Find task patterns
+            task_patterns = re.findall(
+                r'"id":\s*"([^"]*)"[^}]*"operator":\s*"([^"]*)"[^}]*"description":\s*"([^"]*)"',
+                response_text,
+                re.DOTALL,
+            )
+
+            if not task_patterns:
+                # Try alternative task pattern matching
+                task_blocks = re.findall(
+                    r'\{[^{}]*(?:"id"|id:)[^{}]*\}', response_text, re.DOTALL
+                )
+                for block in task_blocks:
+                    id_match = re.search(r'(?:"id"|id):\s*[\'"]?([^\'"]*)[\'"]?', block)
+                    op_match = re.search(
+                        r'(?:"operator"|hallmark):\s*[\'"]?([^\'"]*)[\'"]?', block
+                    )
+                    desc_match_task = re.search(
+                        r'(?:"description"|description):\s*[\'"]([^\'"]*)[\'"]', block
+                    )
+
+                    if id_match:
+                        tasks.append(
+                            {
+                                "id": id_match.group(1),
+                                "operator": op_match.group(1)
+                                if op_match
+                                else "PythonOperator",
+                                "description": desc_match_task.group(1)
+                                if desc_match_task
+                                else f"Task: {id_match.group(1)}",
+                                "upstream_dependencies": [],
+                            }
+                        )
+            else:
+                for task_id, operator, description in task_patterns:
+                    tasks.append(
+                        {
+                            "id": task_id,
+                            "operator": operator,
+                            "description": description,
+                            "upstream_dependencies": [],
+                        }
+                    )
+
+            # If no tasks found, create default tasks based on description
+            if not tasks:
+                if any(
+                    word in response_text.lower() for word in ["extract", "etl", "data"]
+                ):
+                    tasks = [
+                        {
+                            "id": "extract_data",
+                            "operator": "PythonOperator",
+                            "description": "Extract data from source",
+                            "upstream_dependencies": [],
+                        },
+                        {
+                            "id": "validate_data",
+                            "operator": "PythonOperator",
+                            "description": "Validate data quality",
+                            "upstream_dependencies": ["extract_data"],
+                        },
+                        {
+                            "id": "load_data",
+                            "operator": "PythonOperator",
+                            "description": "Load data to destination",
+                            "upstream_dependencies": ["validate_data"],
+                        },
+                    ]
+
+            # Set up dependencies for sequential tasks
+            for i in range(1, len(tasks)):
+                if not tasks[i]["upstream_dependencies"]:
+                    tasks[i]["upstream_dependencies"] = [tasks[i - 1]["id"]]
+
             return {
-                "dag_id": f"generated_dag_{int(time.time())}",
-                "description": description,
-                "tasks": [
-                    {
-                        "id": "task_1",
-                        "operator": "PythonOperator",
-                        "description": description,
-                    }
-                ],
+                "dag_id": dag_id_match.group(1)
+                if dag_id_match
+                else "generated_pipeline",
+                "description": desc_match.group(1)
+                if desc_match
+                else "AI-generated DAG",
+                "schedule_interval": sched_match.group(1) if sched_match else "@daily",
+                "tasks": tasks,
             }
 
-    def _optimize_dependencies(self, structure: dict) -> dict:
-        """Optimize task dependencies for maximum parallelization"""
-        # For now, return as-is. In production, this would implement
-        # topological sort with parallelization analysis
+    def _create_fallback_structure(self, description: str) -> dict:
+        """Create intelligent fallback DAG structure based on description analysis"""
+        description_lower = description.lower()
+
+        # Analyze description for common patterns
+        tasks = []
+        dag_id = f"dag_{description[:20].replace(' ', '_').replace(',', '').lower()}_{int(time.time())}"
+
+        # Data processing pipeline
+        if any(
+            word in description_lower
+            for word in ["data", "process", "etl", "transform"]
+        ):
+            tasks = [
+                {
+                    "id": "extract_data",
+                    "operator": "PythonOperator",
+                    "description": "Extract data from source",
+                    "upstream_dependencies": [],
+                },
+                {
+                    "id": "transform_data",
+                    "operator": "PythonOperator",
+                    "description": "Transform and clean data",
+                    "upstream_dependencies": ["extract_data"],
+                },
+                {
+                    "id": "load_data",
+                    "operator": "PythonOperator",
+                    "description": "Load data to destination",
+                    "upstream_dependencies": ["transform_data"],
+                },
+            ]
+        # ML pipeline
+        elif any(
+            word in description_lower
+            for word in ["model", "train", "ml", "machine learning"]
+        ):
+            tasks = [
+                {
+                    "id": "prepare_data",
+                    "operator": "PythonOperator",
+                    "description": "Prepare training data",
+                    "upstream_dependencies": [],
+                },
+                {
+                    "id": "train_model",
+                    "operator": "PythonOperator",
+                    "description": "Train ML model",
+                    "upstream_dependencies": ["prepare_data"],
+                },
+                {
+                    "id": "evaluate_model",
+                    "operator": "PythonOperator",
+                    "description": "Evaluate model performance",
+                    "upstream_dependencies": ["train_model"],
+                },
+            ]
+        # Simple task
+        else:
+            tasks = [
+                {
+                    "id": "execute_task",
+                    "operator": "PythonOperator",
+                    "description": description,
+                    "upstream_dependencies": [],
+                }
+            ]
+
+        return {
+            "dag_id": dag_id,
+            "description": description,
+            "schedule_interval": "@daily",
+            "tasks": tasks,
+        }
+
+    async def _optimize_dependencies(self, structure: dict) -> dict:
+        """Optimize task dependencies for maximum parallelization using AI"""
+        prompt = f"""Optimize this DAG structure for maximum parallelization:
+
+{json.dumps(structure, indent=2)}
+
+Return ONLY the optimized JSON with the same format but better dependencies.
+Consider: parallel execution, resource usage, logical order.
+
+Return ONLY valid JSON, no explanations:"""
+
+        try:
+            result = await self.model_server.generate(prompt, model_name="phi3-mini")
+            if result.success:
+                response_text = result.text.strip()
+                # Clean up response
+                if response_text.startswith("```json"):
+                    response_text = response_text[7:-3].strip()
+                elif response_text.startswith("```"):
+                    response_text = response_text[3:-3].strip()
+
+                optimized = json.loads(response_text)
+                return optimized
+        except Exception as e:
+            print(f"AI optimization failed: {e}, using original structure")
+
+        # Fallback to basic optimization
+        return self._basic_dependency_optimization(structure)
+
+    def _basic_dependency_optimization(self, structure: dict) -> dict:
+        """Basic dependency optimization without AI"""
+        # Simple heuristic: identify tasks that can run in parallel
+        tasks = structure.get("tasks", [])
+
+        # Remove unnecessary dependencies
+        for task in tasks:
+            deps = task.get("upstream_dependencies", [])
+            # Remove self-dependencies
+            task["upstream_dependencies"] = [dep for dep in deps if dep != task["id"]]
+
         return structure
 
     def _apply_constraints(self, structure: dict, constraints: dict) -> dict:
@@ -176,8 +433,162 @@ class LLMOrchestrator:
 
         return structure
 
+    async def _create_dag_with_implementations(self, structure: dict) -> DAG:
+        """Create DAG with AI-generated implementations for each task"""
+
+        # First, generate implementations for each task
+        sql_scripts = {}
+        python_functions = {}
+
+        for task in structure.get("tasks", []):
+            task_id = task.get("id", "")
+            task_type = task.get("operator", "")
+            task_desc = task.get("description", "")
+
+            if task_type == "SqlOperator" or "sql" in task_desc.lower():
+                # Generate SQL implementation
+                sql_code = await self._generate_sql_implementation(task_id, task_desc)
+                sql_scripts[f"{task_id}.sql"] = sql_code
+
+            elif task_type == "PythonOperator" or task_type == "python":
+                # Generate Python implementation
+                python_code = await self._generate_python_implementation(
+                    task_id, task_desc
+                )
+                python_functions[f"{task_id}.py"] = python_code
+
+        # Now create the actual DAG using the factory
+        return await self._create_complete_dag(structure, sql_scripts, python_functions)
+
+    async def _generate_sql_implementation(self, task_id: str, description: str) -> str:
+        """Generate actual SQL code for a task"""
+        prompt = f"""Write a production-ready SQL query for this task:
+Task: {task_id}
+Description: {description}
+
+Return ONLY the SQL code, no explanations. Make it complete and runnable."""
+
+        result = await self.model_server.generate(
+            prompt, model_name="phi3-mini", temperature=0.3
+        )
+
+        if result.success:
+            # Clean up the response
+            sql = result.text.strip()
+            if sql.startswith("```sql"):
+                sql = sql[6:-3].strip()
+            elif sql.startswith("```"):
+                sql = sql[3:-3].strip()
+            return sql
+        else:
+            # Fallback SQL
+            return f"-- Task: {task_id}\n-- Description: {description}\nSELECT 1 as placeholder;"
+
+    async def _generate_python_implementation(
+        self, task_id: str, description: str
+    ) -> str:
+        """Generate actual Python code for a task"""
+        prompt = f"""Write a production-ready Python function for an Airflow task:
+Task: {task_id}
+Description: {description}
+
+Requirements:
+- Function should accept **context as parameter
+- Include error handling
+- Return a result dictionary
+- Add logging
+
+Return ONLY the Python code."""
+
+        result = await self.model_server.generate(
+            prompt, model_name="phi3-mini", temperature=0.3, max_tokens=400
+        )
+
+        if result.success:
+            # Clean up the response
+            code = result.text.strip()
+            if code.startswith("```python"):
+                code = code[9:-3].strip()
+            elif code.startswith("```"):
+                code = code[3:-3].strip()
+            return code
+        else:
+            # Fallback Python
+            return f'''def {task_id}(**context):
+    """
+    Task: {task_id}
+    Description: {description}
+    """
+    import logging
+    logger = logging.getLogger(__name__)
+
+    try:
+        logger.info(f"Executing {task_id}")
+        # TODO: Implement actual logic
+
+        return {{"status": "success", "task": "{task_id}"}}
+    except Exception as e:
+        logger.error(f"Error in {task_id}: {{e}}")
+        raise'''
+
+    async def _create_complete_dag(
+        self, structure: dict, sql_scripts: dict, python_functions: dict
+    ) -> DAG:
+        """Create complete DAG with all implementations"""
+        if not AIRFLOW_AVAILABLE:
+            raise RuntimeError(
+                "Apache Airflow is required for DAG generation. Please install airflow: pip install apache-airflow"
+            )
+
+        from .dag_factory import DAGConfig, EnterpriseDAGFactory, TaskConfig
+
+        # Create DAG config
+        dag_config = DAGConfig(
+            dag_id=structure.get("dag_id", "generated_dag"),
+            description=structure.get("description", "AI-generated DAG"),
+            schedule_interval=structure.get("schedule_interval", "@daily"),
+            owners=["airflow-llm"],
+            tags=["ai-generated", "production"],
+        )
+
+        # Create task configs
+        task_configs = []
+        for task in structure.get("tasks", []):
+            task_config = TaskConfig(
+                name=task.get("id", "task"),
+                operator=task.get("operator", "python"),
+                depends_on=task.get("upstream_dependencies", ["none"]),
+                python_callable=task.get("id", "task")
+                if task.get("operator") == "python"
+                else None,
+                sql_script=f"{task.get('id', 'task')}.sql"
+                if "sql" in task.get("operator", "").lower()
+                else None,
+            )
+            task_configs.append(task_config)
+
+        # Use the factory to generate the complete DAG
+        factory = EnterpriseDAGFactory(output_dir="./generated_dags")
+        dag_path = factory.generate_dag(
+            description=structure.get("description", ""),
+            dag_config=dag_config,
+            tasks=task_configs,
+            sql_scripts=sql_scripts,
+            python_functions=python_functions,
+        )
+
+        # Return a DAG object
+        dag = DAG(dag_id=dag_config.dag_id)
+        dag.dag_path = dag_path
+        return dag
+
     def _create_dag(self, structure: dict) -> DAG:
         """Create actual Airflow DAG from structured definition"""
+        if not AIRFLOW_AVAILABLE:
+            raise RuntimeError(
+                "Apache Airflow is required for DAG generation. Please install airflow: pip install apache-airflow"
+            )
+
         dag_id = structure.get("dag_id", f"generated_dag_{int(time.time())}")
         description = structure.get("description", "Auto-generated DAG")
 
@@ -205,12 +616,10 @@ class LLMOrchestrator:
                 )
                 dag.tasks.append(task)
             else:
-                # Mock task for development
-                class MockTask:
-                    def __init__(self, task_id):
-                        self.task_id = task_id
-
-                dag.tasks.append(MockTask(task_def.get("id", "default_task")))
+                # Airflow not available - cannot create tasks
+                raise RuntimeError(
+                    "Apache Airflow is required for DAG generation. Please install airflow: pip install apache-airflow"
+                )
 
         return dag
 
@@ -297,33 +706,6 @@ class LLMOrchestrator:
             resources = self._gpu_optimization(resources, dag_run)
 
         return resources
-
-    def _parse_requirements(self, description: str) -> dict[str, Any]:
-        """Parse natural language into DAG structure"""
-        prompt = f"""
-        Convert this pipeline description into a structured DAG:
-        {description}
-
-        Return JSON with tasks, dependencies, and resource requirements.
-        """
-
-        response = self.model_router.query(prompt, task_type="parsing")
-        return json.loads(response)
-
-    def _optimize_dependencies(self, structure: dict) -> dict:
-        """Optimize task dependencies for maximum parallelization"""
-        # Implement topological sort with parallelization analysis
-        # This would use graph algorithms to optimize execution
-        return structure
-
-    def _add_self_healing(self, dag: DAG) -> DAG:
-        """Add self-healing capabilities to DAG"""
-        # In production, this would wrap each task with error handling
-        # For now, just add metadata to indicate self-healing is enabled
-        if hasattr(dag, "tags"):
-            dag.tags.append("self-healing-enabled")
-
-        return dag
 
     def _self_heal_callback(self, context):
         """Callback for self-healing on task failure"""

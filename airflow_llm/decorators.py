@@ -16,16 +16,8 @@ try:
     AIRFLOW_AVAILABLE = True
 except ImportError:
     AIRFLOW_AVAILABLE = False
-
-    # Mock classes for development
-    class DAG:
-        def __init__(self, dag_id, **kwargs):
-            self.dag_id = dag_id
-            self.tasks = []
-
-    class PythonOperator:
-        def __init__(self, task_id, **kwargs):
-            self.task_id = task_id
+    DAG = None
+    PythonOperator = None
 
     def days_ago(n):
         return datetime.now() - timedelta(days=n)
@@ -54,6 +46,11 @@ def natural_language_dag(
     """
 
     def decorator(func: Callable) -> DAG:
+        if not AIRFLOW_AVAILABLE:
+            raise RuntimeError(
+                "Apache Airflow is required for DAG generation. Please install airflow: pip install apache-airflow"
+            )
+
         logger.info(f"Generating DAG from description: {description[:100]}...")
 
         actual_dag_id = dag_id or func.__name__

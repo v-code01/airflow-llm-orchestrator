@@ -1,6 +1,6 @@
 """
 Self-healing agent for autonomous error recovery
-ENTERPRISE FEATURE - Requires AirflowLLM Enterprise license
+Production-grade autonomous error detection and recovery system
 """
 
 import logging
@@ -10,8 +10,6 @@ import traceback
 from dataclasses import dataclass
 from enum import Enum
 from typing import Any
-
-from .enterprise_features import enterprise
 
 logger = logging.getLogger(__name__)
 
@@ -42,7 +40,6 @@ class SelfHealingAgent:
     Autonomous error detection and recovery system
     """
 
-    @enterprise.require_enterprise("Self-Healing Agent")
     def __init__(self, enable_auto_fix: bool = True, max_retries: int = 3):
         self.enable_auto_fix = enable_auto_fix
         self.max_retries = max_retries

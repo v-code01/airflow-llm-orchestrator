@@ -1,6 +1,6 @@
 """
 Cost-aware scheduling and resource optimization
-ENTERPRISE FEATURE - Requires AirflowLLM Enterprise license
+Production-grade intelligent cost optimization and resource scheduling
 """
 
 import logging
@@ -11,26 +11,13 @@ from enum import Enum
 from typing import Any
 
 try:
-    import numpy as np
+    pass
 
     NUMPY_AVAILABLE = True
 except ImportError:
-    NUMPY_AVAILABLE = False
-
-    # Mock numpy for development
-    class MockNumPy:
-        def mean(self, data):
-            return sum(data) / len(data) if data else 0
-
-        def array(self, data):
-            return data
-
-        def random(self):
-            import random
-
-            return random
-
-    np = MockNumPy()
+    raise ImportError(
+        "NumPy is required for cost optimization. Please install: pip install numpy"
+    )
 
 logger = logging.getLogger(__name__)
 

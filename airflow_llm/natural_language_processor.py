@@ -14,24 +14,10 @@ try:
     AIRFLOW_AVAILABLE = True
 except ImportError:
     AIRFLOW_AVAILABLE = False
-
-    # Mock classes for development
-    class DAG:
-        def __init__(self, dag_id, **kwargs):
-            self.dag_id = dag_id
-            self.tasks = []
-
-    class BashOperator:
-        def __init__(self, task_id, **kwargs):
-            self.task_id = task_id
-
-    class PythonOperator:
-        def __init__(self, task_id, **kwargs):
-            self.task_id = task_id
-
-    class SimpleHttpOperator:
-        def __init__(self, task_id, **kwargs):
-            self.task_id = task_id
+    DAG = None
+    BashOperator = None
+    PythonOperator = None
+    SimpleHttpOperator = None
 
 
 class NaturalLanguageDAGGenerator:
@@ -52,6 +38,11 @@ class NaturalLanguageDAGGenerator:
         """
         Generate complete DAG code from natural language
         """
+        if not AIRFLOW_AVAILABLE:
+            raise RuntimeError(
+                "Apache Airflow is required for DAG generation. Please install airflow: pip install apache-airflow"
+            )
+
         # Parse the description into tasks
         tasks = self._extract_tasks(description)
 

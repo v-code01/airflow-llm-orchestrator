@@ -1,9 +1,59 @@
+accelerate>=0.28.0
+
+# Core dependencies
 aiohttp>=3.8.0
-anthropic>=0.7.0
-apache-airflow>=2.5.0
+apache-airflow>=2.5.0; python_version < "3.13"
 asyncio-throttle>=1.0.0
+auto-gptq>=0.7.1; python_version < "3.13"
+autoawq>=0.2.0; python_version < "3.13"
+
+# Quantization support (optional for compatibility)
+bitsandbytes>=0.43.0; python_version < "3.13"
+black>=23.0.0
+chromadb>=0.4.0
+click>=8.0.0
+
+# Optional: Advanced features
+faiss-cpu>=1.7.4
+gpustat>=1.1.1
+
+# Model management and optimization
+huggingface-hub>=0.20.0
+isort>=5.12.0
+jinja2>=3.1.0
+langchain>=0.1.0
+line-profiler>=4.1.0
+llama-cpp-python>=0.2.85
+memory-profiler>=0.61.0
+mypy>=1.5.0
 numpy>=1.21.0
-openai>=1.0.0
+
+# GPU and system monitoring
+nvidia-ml-py>=12.535.133
+
+# Optional: Additional model backends
+ollama>=0.1.8
+optimum>=1.17.0
 psutil>=5.9.0
+
+# Performance monitoring and profiling
+py-spy>=0.3.14
+py3nvml>=0.2.7
 pydantic>=2.0.0
+pyinstrument>=4.6.0
+
+# Development and testing
+pytest>=7.4.0
+pytest-asyncio>=0.21.0
+pytest-benchmark>=4.0.0
+# Python compatibility
+python_requires = ">=3.9,<3.13"
+pyyaml>=6.0
 requests>=2.28.0
+sentence-transformers>=2.6.0
+tokenizers>=0.19.0
+torch>=2.1.0
+transformers>=4.40.0
+
+# Production LLM inference with vLLM
+vllm>=0.4.0; python_version < "3.13"
